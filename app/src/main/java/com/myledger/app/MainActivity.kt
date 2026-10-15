@@ -96,8 +96,15 @@ fun LedgerScreen() {
     var date by remember { mutableStateOf(SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())) }
     var message by remember { mutableStateOf("") }
     var isListening by remember { mutableStateOf(false) }
-    val speechRecognizer = remember(context) {
-        if (SpeechRecognizer.isRecognitionAvailable(context)) SpeechRecognizer.createSpeechRecognizer(context) else null
+    val speechRecognizer = remember(context.applicationContext) {
+        try {
+            val appContext = context.applicationContext
+            if (SpeechRecognizer.isRecognitionAvailable(appContext)) {
+                SpeechRecognizer.createSpeechRecognizer(appContext)
+            } else null
+        } catch (_: RuntimeException) {
+            null
+        }
     }
 
     fun applySpoken(spoken: String) {
@@ -141,9 +148,9 @@ fun LedgerScreen() {
             isListening = true
             message = "Listening… tap the microphone again to stop."
             recognizer.startListening(intent)
-        } catch (_: Exception) {
+        } catch (_: RuntimeException) {
             isListening = false
-            message = "Couldn't start voice recognition. Please type the record instead."
+            message = "Voice recognition couldn't start on this phone. You can still type the record."
         }
     }
 
@@ -194,9 +201,13 @@ fun LedgerScreen() {
     }
     fun startVoice() {
         if (isListening) {
-            speechRecognizer?.stopListening()
+            try {
+                speechRecognizer?.stopListening()
+            } catch (_: RuntimeException) {
+                message = "Voice recognition stopped unexpectedly. You can still type the record."
+            }
             isListening = false
-            message = "Stopping microphone…"
+            message = if (message.startsWith("Voice recognition stopped")) message else "Stopping microphone…"
         } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         } else {
