@@ -4,7 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.speech.RecognizerIntent
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,7 +30,7 @@ import java.util.Locale
 
 data class Entry(val id: Long, val date: String, val person: String, val note: String, val amount: Double, val kind: String)
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     private var unlocked by mutableStateOf(false)
     private var authMessage by mutableStateOf("")
     override fun onCreate(savedInstanceState: Bundle?) {
