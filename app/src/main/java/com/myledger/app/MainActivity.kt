@@ -97,18 +97,28 @@ fun LedgerScreen() {
             val lower = spoken.lowercase(Locale.getDefault())
             kind = when {
                 lower.contains("i owe") || lower.contains("i borrowed") -> "I owe"
-                lower.contains("i paid") || lower.contains("paid back") || lower.contains("i repaid") -> "I paid"
-                lower.contains("paid me") || lower.contains("received") || lower.contains("paid back to me") -> "Payment received"
-                lower.contains("owe me") || lower.contains("lent") -> "Owed to me"
+                lower.contains("i paid") || lower.contains("i repaid") || lower.contains("i paid back") -> "I paid"
+                lower.contains("paid me") || lower.contains("received") || lower.contains("paid back to me") || lower.contains("repaid me") -> "Payment received"
+                lower.contains("owes me") || lower.contains("owe me") || lower.contains("lent") || lower.contains("loaned") -> "Owed to me"
                 else -> kind
             }
-            message = "Check the details below, then save the record."
+            val namePatterns = listOf(
+                Regex("(?i)^\\s*([a-z][a-z'’-]*)\\s+(?:paid me|owes me|repaid me|borrowed from me)\\b"),
+                Regex("(?i)^\\s*i\\s+(?:owe|borrowed from|paid|repaid|paid back|lent|loaned)\\s+([a-z][a-z'’-]*)\\b"),
+                Regex("(?i)^\\s*([a-z][a-z'’-]*)\\s+(?:borrowed|owes|paid|repaid)\\b")
+            )
+            val foundPerson = namePatterns.firstNotNullOfOrNull { it.find(spoken)?.groupValues?.getOrNull(1) }
+            if (!foundPerson.isNullOrBlank()) person = foundPerson.replaceFirstChar { it.uppercase(Locale.getDefault()) }
+            message = "Check the person, type and amount below before saving."
         }
     }
     val income = entries.filter { it.kind == "Income" }.sumOf { it.amount }
     val expense = entries.filter { it.kind == "Expense" }.sumOf { it.amount }
     val owedToMe = entries.filter { it.kind == "Owed to me" }.sumOf { it.amount } - entries.filter { it.kind == "Payment received" }.sumOf { it.amount }
     val iOwe = entries.filter { it.kind == "I owe" }.sumOf { it.amount } - entries.filter { it.kind == "I paid" }.sumOf { it.amount }
+    val people = entries.map { it.person.trim() }.filter { it.isNotBlank() }.distinct().sorted()
+    fun balanceOwedBy(personName: String) = entries.filter { it.person.equals(personName, ignoreCase = true) && it.kind == "Owed to me" }.sumOf { it.amount } - entries.filter { it.person.equals(personName, ignoreCase = true) && it.kind == "Payment received" }.sumOf { it.amount }
+    fun balanceIOwe(personName: String) = entries.filter { it.person.equals(personName, ignoreCase = true) && it.kind == "I owe" }.sumOf { it.amount } - entries.filter { it.person.equals(personName, ignoreCase = true) && it.kind == "I paid" }.sumOf { it.amount }
 
     fun save(newEntries: List<Entry>) {
         entries = newEntries
@@ -138,6 +148,22 @@ fun LedgerScreen() {
                     SummaryCard("Income", income); SummaryCard("Expenses", expense)
                     SummaryCard("People owe me (after payments)", owedToMe)
                     SummaryCard("I owe others (after repayments)", iOwe)
+                    if (people.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text("Balances by person", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        people.forEach { name ->
+                            val theyOwe = balanceOwedBy(name)
+                            val iOweThem = balanceIOwe(name)
+                            Card(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+                                Column(Modifier.padding(12.dp)) {
+                                    Text(name, fontWeight = FontWeight.SemiBold)
+                                    if (theyOwe != 0.0) Text("They owe you: " + money(theyOwe))
+                                    if (iOweThem != 0.0) Text("You owe them: " + money(iOweThem))
+                                    if (theyOwe == 0.0 && iOweThem == 0.0) Text("All settled")
+                                }
+                            }
+                        }
+                    }
                     Text("Income minus expenses: " + money(income - expense), modifier = Modifier.padding(top = 12.dp), style = MaterialTheme.typography.titleMedium)
                     Text("Records are stored on this device. Export a backup from Records.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
                 }
