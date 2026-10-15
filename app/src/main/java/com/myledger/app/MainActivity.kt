@@ -1,9 +1,13 @@
 package com.myledger.app
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
+import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -11,6 +15,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
+import androidx.compose.material3.IconButton
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -88,29 +95,88 @@ fun LedgerScreen() {
     var kind by remember { mutableStateOf("Owed to me") }
     var date by remember { mutableStateOf(SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())) }
     var message by remember { mutableStateOf("") }
-    val speechLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        val spoken = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull().orEmpty()
-        if (spoken.isNotBlank()) {
-            note = spoken
-            val amountMatch = Regex("(?:\\$\\s*)?([0-9]+(?:[,.][0-9]{1,2})?)").find(spoken.replace(",", ""))
-            if (amountMatch != null) amountText = amountMatch.groupValues[1].replace(",", "")
-            val lower = spoken.lowercase(Locale.getDefault())
-            kind = when {
-                lower.contains("i owe") || lower.contains("i borrowed") -> "I owe"
-                lower.contains("i paid") || lower.contains("i repaid") || lower.contains("i paid back") -> "I paid"
-                lower.contains("paid me") || lower.contains("received") || lower.contains("paid back to me") || lower.contains("repaid me") -> "Payment received"
-                lower.contains("owes me") || lower.contains("owe me") || lower.contains("lent") || lower.contains("loaned") -> "Owed to me"
-                else -> kind
-            }
-            val namePatterns = listOf(
-                Regex("(?i)^\\s*([a-z][a-z'’-]*)\\s+(?:paid me|owes me|repaid me|borrowed from me)\\b"),
-                Regex("(?i)^\\s*i\\s+(?:owe|borrowed from|paid|repaid|paid back|lent|loaned)\\s+([a-z][a-z'’-]*)\\b"),
-                Regex("(?i)^\\s*([a-z][a-z'’-]*)\\s+(?:borrowed|owes|paid|repaid)\\b")
-            )
-            val foundPerson = namePatterns.firstNotNullOfOrNull { it.find(spoken)?.groupValues?.getOrNull(1) }
-            if (!foundPerson.isNullOrBlank()) person = foundPerson.replaceFirstChar { it.uppercase(Locale.getDefault()) }
-            message = "Check the person, type and amount below before saving."
+    var isListening by remember { mutableStateOf(false) }
+    val speechRecognizer = remember(context) {
+        if (SpeechRecognizer.isRecognitionAvailable(context)) SpeechRecognizer.createSpeechRecognizer(context) else null
+    }
+
+    fun applySpoken(spoken: String) {
+        if (spoken.isBlank()) return
+        note = spoken
+        val normalized = spoken.replace(",", "")
+        val amountMatch = Regex("(?:\\$\\s*)?([0-9]+(?:\\.[0-9]{1,2})?)").find(normalized)
+        if (amountMatch != null) amountText = amountMatch.groupValues[1]
+        val lower = spoken.lowercase(Locale.getDefault())
+        kind = when {
+            lower.contains("i owe") || lower.contains("i borrowed") -> "I owe"
+            lower.contains("i paid") || lower.contains("i repaid") || lower.contains("i paid back") -> "I paid"
+            lower.contains("paid me") || lower.contains("received") || lower.contains("paid back to me") || lower.contains("repaid me") -> "Payment received"
+            lower.contains("owes me") || lower.contains("owe me") || lower.contains("lent") || lower.contains("loaned") || Regex("(?i)\\bborrowed from me\\b").containsMatchIn(spoken) -> "Owed to me"
+            else -> kind
         }
+        val namePatterns = listOf(
+            Regex("(?i)^\\s*([a-z][a-z'’-]*)\\s+(?:paid me|owes me|repaid me|borrowed from me)\\b"),
+            Regex("(?i)^\\s*i\\s+(?:owe|borrowed from|paid|repaid|paid back|lent|loaned)\\s+([a-z][a-z'’-]*)\\b"),
+            Regex("(?i)^\\s*([a-z][a-z'’-]*)\\s+(?:borrowed|owes|paid|repaid)\\b")
+        )
+        val foundPerson = namePatterns.firstNotNullOfOrNull { it.find(spoken)?.groupValues?.getOrNull(1) }
+        if (!foundPerson.isNullOrBlank()) person = foundPerson.replaceFirstChar { it.uppercase(Locale.getDefault()) }
+        message = "Check the person, type and amount below before saving."
+    }
+
+    fun beginListening() {
+        val recognizer = speechRecognizer
+        if (recognizer == null) {
+            message = "Voice recognition isn't available on this phone. You can type the record instead."
+            isListening = false
+            return
+        }
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Say a transaction, for example: Dave paid me 300 dollars")
+        }
+        try {
+            isListening = true
+            message = "Listening… tap the microphone again to stop."
+            recognizer.startListening(intent)
+        } catch (_: Exception) {
+            isListening = false
+            message = "Couldn't start voice recognition. Please type the record instead."
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) beginListening()
+        else message = "Microphone permission is needed for voice entry. You can still type the record."
+    }
+
+    DisposableEffect(speechRecognizer) {
+        speechRecognizer?.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) { isListening = true }
+            override fun onBeginningOfSpeech() { isListening = true }
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() { isListening = false }
+            override fun onError(error: Int) {
+                isListening = false
+                if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                    message = "Voice entry stopped. Please try again or type the record."
+                }
+            }
+            override fun onResults(results: Bundle?) {
+                isListening = false
+                val spoken = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
+                applySpoken(spoken)
+            }
+            override fun onPartialResults(partialResults: Bundle?) {
+                val partial = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+                if (!partial.isNullOrBlank()) message = "Hearing: $partial"
+            }
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
+        onDispose { speechRecognizer?.destroy() }
     }
     val income = entries.filter { it.kind == "Income" }.sumOf { it.amount }
     val expense = entries.filter { it.kind == "Expense" }.sumOf { it.amount }
@@ -127,12 +193,15 @@ fun LedgerScreen() {
         prefs.edit().putString("entries", array.toString()).apply()
     }
     fun startVoice() {
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "Say a transaction, for example: Dave paid me 300 dollars")
+        if (isListening) {
+            speechRecognizer?.stopListening()
+            isListening = false
+            message = "Stopping microphone…"
+        } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        } else {
+            beginListening()
         }
-        try { speechLauncher.launch(intent) } catch (_: Exception) { message = "Voice recognition isn't available on this phone. You can type the record instead." }
     }
 
     Scaffold(topBar = { TopAppBarCompat("My Ledger") }) { padding ->
@@ -170,8 +239,13 @@ fun LedgerScreen() {
                 "Add entry" -> {
                     Text("Add a record", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(8.dp))
-                    OutlinedButton(onClick = { startVoice() }, modifier = Modifier.fillMaxWidth()) { Text("🎙 Speak a transaction") }
-                    Text("Speak naturally, then check the fields before saving.", style = MaterialTheme.typography.bodySmall)
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        IconButton(onClick = { startVoice() }) { Text(if (isListening) "⏹️" else "🎙️", style = MaterialTheme.typography.headlineMedium) }
+                        Column(Modifier.weight(1f)) {
+                            Text(if (isListening) "Listening — tap to stop" else "Tap the microphone to speak", fontWeight = FontWeight.SemiBold)
+                            Text("I'll fill in the fields for you to check.", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                     Spacer(Modifier.height(8.dp))
                     Text("Transaction type")
                     Column {
