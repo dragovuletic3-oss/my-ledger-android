@@ -16,7 +16,6 @@ import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
 import androidx.compose.material3.IconButton
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -96,16 +95,9 @@ fun LedgerScreen() {
     var date by remember { mutableStateOf(SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())) }
     var message by remember { mutableStateOf("") }
     var isListening by remember { mutableStateOf(false) }
-    val speechRecognizer = remember(context.applicationContext) {
-        try {
-            val appContext = context.applicationContext
-            if (SpeechRecognizer.isRecognitionAvailable(appContext)) {
-                SpeechRecognizer.createSpeechRecognizer(appContext)
-            } else null
-        } catch (_: RuntimeException) {
-            null
-        }
-    }
+    var speechRecognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
+    val voiceSession = remember { VoiceSession() }
+    var isProcessing by remember { mutableStateOf(false) }
 
     fun applySpoken(spoken: String) {
         if (spoken.isBlank()) return
@@ -131,26 +123,72 @@ fun LedgerScreen() {
         message = "Check the person, type and amount below before saving."
     }
 
+    fun releaseRecognizer() {
+        val old = speechRecognizer
+        speechRecognizer = null
+        // Some vendor services throw during shutdown too.
+        try { old?.destroy() } catch (_: RuntimeException) { }
+        voiceSession.finish()
+        isListening = false
+        isProcessing = false
+    }
+
     fun beginListening() {
-        val recognizer = speechRecognizer
-        if (recognizer == null) {
-            message = "Voice recognition isn't available on this phone. You can type the record instead."
-            isListening = false
-            return
-        }
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "Say a transaction, for example: Dave paid me 300 dollars")
-        }
+        if (!voiceSession.begin()) return
         try {
+            if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+                releaseRecognizer()
+                message = "Voice recognition isn't available. Enable a speech recognition service in your phone settings."
+                return
+            }
+            // Create only after microphone permission has been granted, and install
+            // the listener before issuing any commands to the service.
+            val recognizer = SpeechRecognizer.createSpeechRecognizer(context)
+            speechRecognizer = recognizer
+            recognizer.setRecognitionListener(object : RecognitionListener {
+                override fun onReadyForSpeech(params: Bundle?) { isListening = true }
+                override fun onBeginningOfSpeech() { isListening = true }
+                override fun onRmsChanged(rmsdB: Float) {}
+                override fun onBufferReceived(buffer: ByteArray?) {}
+                override fun onEndOfSpeech() {
+                    voiceSession.processing()
+                    isListening = false
+                    isProcessing = true
+                    message = "Processing your words…"
+                }
+                override fun onError(error: Int) {
+                    releaseRecognizer()
+                    message = when (error) {
+                        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Allow microphone access in Settings > Apps > My Ledger > Permissions."
+                        SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "I didn't catch that. Tap the microphone to try again."
+                        SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Check your internet connection, then try again."
+                        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "The speech service is busy. Wait a moment and try again."
+                        else -> "Voice entry stopped (code $error). Tap to retry, or type the record."
+                    }
+                }
+                override fun onResults(results: Bundle?) {
+                    val spoken = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
+                    releaseRecognizer()
+                    if (spoken.isBlank()) message = "I didn't catch that. Please try again."
+                    else applySpoken(spoken)
+                }
+                override fun onPartialResults(partialResults: Bundle?) {
+                    val partial = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+                    if (!partial.isNullOrBlank()) message = "Hearing: $partial"
+                }
+                override fun onEvent(eventType: Int, params: Bundle?) {}
+            })
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            }
             isListening = true
             message = "Listening… tap the microphone again to stop."
             recognizer.startListening(intent)
         } catch (_: RuntimeException) {
-            isListening = false
-            message = "Voice recognition couldn't start on this phone. You can still type the record."
+            releaseRecognizer()
+            message = "Voice recognition couldn't start. Check microphone permission and your phone's speech service, then retry."
         }
     }
 
@@ -159,31 +197,11 @@ fun LedgerScreen() {
         else message = "Microphone permission is needed for voice entry. You can still type the record."
     }
 
-    DisposableEffect(speechRecognizer) {
-        speechRecognizer?.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) { isListening = true }
-            override fun onBeginningOfSpeech() { isListening = true }
-            override fun onRmsChanged(rmsdB: Float) {}
-            override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() { isListening = false }
-            override fun onError(error: Int) {
-                isListening = false
-                if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
-                    message = "Voice entry stopped. Please try again or type the record."
-                }
-            }
-            override fun onResults(results: Bundle?) {
-                isListening = false
-                val spoken = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
-                applySpoken(spoken)
-            }
-            override fun onPartialResults(partialResults: Bundle?) {
-                val partial = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-                if (!partial.isNullOrBlank()) message = "Hearing: $partial"
-            }
-            override fun onEvent(eventType: Int, params: Bundle?) {}
-        })
-        onDispose { speechRecognizer?.destroy() }
+    DisposableEffect(Unit) {
+        onDispose { releaseRecognizer() }
+    }
+    LaunchedEffect(tab) {
+        if (tab != "Add entry") releaseRecognizer()
     }
     val income = entries.filter { it.kind == "Income" }.sumOf { it.amount }
     val expense = entries.filter { it.kind == "Expense" }.sumOf { it.amount }
@@ -200,14 +218,19 @@ fun LedgerScreen() {
         prefs.edit().putString("entries", array.toString()).apply()
     }
     fun startVoice() {
-        if (isListening) {
+        if (isProcessing) {
+            message = "Still processing. Please wait for the result."
+        } else if (isListening) {
             try {
+                voiceSession.processing()
+                isListening = false
+                isProcessing = true
+                message = "Processing your words…"
                 speechRecognizer?.stopListening()
             } catch (_: RuntimeException) {
-                message = "Voice recognition stopped unexpectedly. You can still type the record."
+                releaseRecognizer()
+                message = "Voice recognition stopped. Tap the microphone to retry."
             }
-            isListening = false
-            message = if (message.startsWith("Voice recognition stopped")) message else "Stopping microphone…"
         } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         } else {
@@ -215,7 +238,7 @@ fun LedgerScreen() {
         }
     }
 
-    Scaffold(topBar = { TopAppBarCompat("My Ledger") }) { padding ->
+    Scaffold(topBar = { TopAppBarCompat("My Ledger 1.1") }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("Overview", "Add entry", "Records").forEach { item -> FilterChip(selected = tab == item, onClick = { tab = item }, label = { Text(item) }) }
@@ -251,9 +274,9 @@ fun LedgerScreen() {
                     Text("Add a record", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(8.dp))
                     Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                        IconButton(onClick = { startVoice() }) { Text(if (isListening) "⏹️" else "🎙️", style = MaterialTheme.typography.headlineMedium) }
+                        IconButton(enabled = !isProcessing, onClick = { startVoice() }) { Text(if (isListening) "⏹️" else "🎙️", style = MaterialTheme.typography.headlineMedium) }
                         Column(Modifier.weight(1f)) {
-                            Text(if (isListening) "Listening — tap to stop" else "Tap the microphone to speak", fontWeight = FontWeight.SemiBold)
+                            Text(if (isProcessing) "Processing your words…" else if (isListening) "Listening — tap to stop" else "Tap the microphone to speak", fontWeight = FontWeight.SemiBold)
                             Text("I'll fill in the fields for you to check.", style = MaterialTheme.typography.bodySmall)
                         }
                     }
