@@ -36,7 +36,7 @@ fun parseEntry(text: String, defaultPerson: String? = null): ParsedEntry {
             else -> null
         }
     }
-    if (who?.lowercase(Locale.ROOT) in listOf("him", "her", "them")) who = defaultPerson
+    if (who?.lowercase(Locale.ROOT) in listOf("him", "her", "them", "he", "she", "they")) who = defaultPerson
     val numeric = Regex("(?:\\$\\s*)?(\\d+(?:,\\d{3})*(?:\\.\\d{1,2})?)(?!\\d)").find(clean)
     val amount = numeric?.groupValues?.get(1)?.replace(",", "")?.toDoubleOrNull() ?: wordAmount(clean)
     return ParsedEntry(who?.trim() ?: defaultPerson?.takeIf { it.isNotBlank() }, amount, kind)

@@ -105,7 +105,7 @@ fun LedgerScreen() {
     var isProcessing by remember { mutableStateOf(false) }
 
     fun applySpoken(spoken: String) {
-        if (spoken.isBlank()) return
+        if (spoken.isBlank()) { note = spoken; kindConfirmed = false; return }
         note = spoken
         val parsed = parseEntry(spoken, selectedPerson)
         parsed.amount?.let { amountText = it.toString() }
