@@ -129,6 +129,7 @@ fun LedgerScreen() {
 
     fun beginListening() {
         if (!voiceSession.begin()) return
+        note = ""; amountText = ""; person = selectedPerson.orEmpty(); kindConfirmed = false
         try {
             if (!SpeechRecognizer.isRecognitionAvailable(context)) {
                 releaseRecognizer()
@@ -226,7 +227,6 @@ fun LedgerScreen() {
         } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         } else {
-            note = ""; amountText = ""; person = selectedPerson.orEmpty(); kindConfirmed = false
             beginListening()
         }
     }

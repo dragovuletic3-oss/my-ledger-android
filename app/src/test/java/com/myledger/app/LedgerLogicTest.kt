@@ -38,6 +38,8 @@ class LedgerLogicTest {
         assertEquals("Mary Jane", parseEntry("I gave Mary Jane $300").person)
         assertEquals("Mary Jane", parseEntry("Mary Jane gave me back $200").person)
         assertEquals("Dan", parseEntry("I paid back Dan 200").person)
+        assertEquals("Dan", parseEntry("I gave Dan fifteen dollars").person)
+        assertEquals(15.0, entry("I gave Dan fifteen dollars").amount, 0.001)
     }
     @Test fun personPageSupportsPronouns() {
         val p = parseEntry("He paid me back 200", "Dan")

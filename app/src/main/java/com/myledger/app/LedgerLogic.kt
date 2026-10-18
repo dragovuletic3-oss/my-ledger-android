@@ -11,7 +11,7 @@ data class ParsedEntry(val person: String?, val amount: Double?, val kind: Strin
 fun parseEntry(text: String, defaultPerson: String? = null): ParsedEntry {
     val clean = text.trim().replace(Regex("[,.!?]+$"), "").replace(Regex("\\s+"), " ")
     val name = "([\\p{L}][\\p{L}'’\\-]*(?: [\\p{L}][\\p{L}'’\\-]*)*?)"
-    val amountStart = "(?=\\s+(?:\\$|[0-9]|zero\\b|one\\b|two\\b|three\\b|four\\b|five\\b|six\\b|seven\\b|eight\\b|nine\\b|ten\\b|twenty\\b|thirty\\b|forty\\b|fifty\\b|sixty\\b|seventy\\b|eighty\\b|ninety\\b)|$)"
+    val amountStart = "(?=\\s+(?:\\$|[0-9]|zero\\b|one\\b|two\\b|three\\b|four\\b|five\\b|six\\b|seven\\b|eight\\b|nine\\b|ten\\b|eleven\\b|twelve\\b|thirteen\\b|fourteen\\b|fifteen\\b|sixteen\\b|seventeen\\b|eighteen\\b|nineteen\\b|twenty\\b|thirty\\b|forty\\b|fifty\\b|sixty\\b|seventy\\b|eighty\\b|ninety\\b)|$)"
     val rules = listOf(
         Pair("^i (?:gave|lent|loaned) $name$amountStart", "Owed to me"),
         Pair("^$name (?:owes? me|borrowed(?: from me)?)\\b", "Owed to me"),
