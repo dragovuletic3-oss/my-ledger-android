@@ -23,6 +23,11 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
+      - name: Keep the same test signing key for future updates
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: my-ledger-debug-signing-v1
       - name: Build debug APK
         run: gradle --no-daemon testDebugUnitTest lintDebug assembleDebug
       - name: Upload APK
@@ -31,3 +36,13 @@ jobs:
           name: my-ledger-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+      - name: Upload test and lint reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: my-ledger-checks
+          path: |
+            app/build/reports/tests/testDebugUnitTest/
+            app/build/reports/lint-results-debug.html
+            app/build/test-results/testDebugUnitTest/
+          if-no-files-found: ignore

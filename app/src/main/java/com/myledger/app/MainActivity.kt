@@ -18,6 +18,9 @@ import androidx.core.content.ContextCompat
 import androidx.compose.material3.IconButton
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
@@ -34,7 +37,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-data class Entry(val id: Long, val date: String, val person: String, val note: String, val amount: Double, val kind: String)
 
 class MainActivity : FragmentActivity() {
     private var unlocked by mutableStateOf(false)
@@ -89,9 +91,12 @@ fun LedgerScreen() {
     var entries by remember { mutableStateOf(loadEntries(prefs)) }
     var tab by remember { mutableStateOf("Overview") }
     var person by remember { mutableStateOf("") }
+    var selectedPerson by remember { mutableStateOf<String?>(null) }
+    var clearRequested by remember { mutableStateOf(false) }
     var note by remember { mutableStateOf("") }
     var amountText by remember { mutableStateOf("") }
     var kind by remember { mutableStateOf("Owed to me") }
+    var kindConfirmed by remember { mutableStateOf(false) }
     var date by remember { mutableStateOf(SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())) }
     var message by remember { mutableStateOf("") }
     var isListening by remember { mutableStateOf(false) }
@@ -102,25 +107,14 @@ fun LedgerScreen() {
     fun applySpoken(spoken: String) {
         if (spoken.isBlank()) return
         note = spoken
-        val normalized = spoken.replace(",", "")
-        val amountMatch = Regex("(?:\\$\\s*)?([0-9]+(?:\\.[0-9]{1,2})?)").find(normalized)
-        if (amountMatch != null) amountText = amountMatch.groupValues[1]
-        val lower = spoken.lowercase(Locale.getDefault())
-        kind = when {
-            lower.contains("i owe") || lower.contains("i borrowed") -> "I owe"
-            lower.contains("i paid") || lower.contains("i repaid") || lower.contains("i paid back") -> "I paid"
-            lower.contains("paid me") || lower.contains("received") || lower.contains("paid back to me") || lower.contains("repaid me") -> "Payment received"
-            lower.contains("owes me") || lower.contains("owe me") || lower.contains("lent") || lower.contains("loaned") || Regex("(?i)\\bborrowed from me\\b").containsMatchIn(spoken) -> "Owed to me"
-            else -> kind
-        }
-        val namePatterns = listOf(
-            Regex("(?i)^\\s*([a-z][a-z'’-]*)\\s+(?:paid me|owes me|repaid me|borrowed from me)\\b"),
-            Regex("(?i)^\\s*i\\s+(?:owe|borrowed from|paid|repaid|paid back|lent|loaned)\\s+([a-z][a-z'’-]*)\\b"),
-            Regex("(?i)^\\s*([a-z][a-z'’-]*)\\s+(?:borrowed|owes|paid|repaid)\\b")
-        )
-        val foundPerson = namePatterns.firstNotNullOfOrNull { it.find(spoken)?.groupValues?.getOrNull(1) }
-        if (!foundPerson.isNullOrBlank()) person = foundPerson.replaceFirstChar { it.uppercase(Locale.getDefault()) }
-        message = "Check the person, type and amount below before saving."
+        val parsed = parseEntry(spoken, selectedPerson)
+        parsed.amount?.let { amountText = it.toString() }
+        kindConfirmed = parsed.kind != null
+        parsed.kind?.let { kind = it }
+        parsed.person?.let { person = it }
+        message = if (parsed.kind == null) "Choose the transaction type, then check the person and amount."
+            else "Check the person, type and amount below before saving."
+
     }
 
     fun releaseRecognizer() {
@@ -170,7 +164,7 @@ fun LedgerScreen() {
                     val spoken = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
                     releaseRecognizer()
                     if (spoken.isBlank()) message = "I didn't catch that. Please try again."
-                    else applySpoken(spoken)
+                    else { applySpoken(spoken); tab = "Add entry" }
                 }
                 override fun onPartialResults(partialResults: Bundle?) {
                     val partial = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
@@ -201,15 +195,13 @@ fun LedgerScreen() {
         onDispose { releaseRecognizer() }
     }
     LaunchedEffect(tab) {
-        if (tab != "Add entry") releaseRecognizer()
+        releaseRecognizer()
     }
-    val income = entries.filter { it.kind == "Income" }.sumOf { it.amount }
-    val expense = entries.filter { it.kind == "Expense" }.sumOf { it.amount }
-    val owedToMe = entries.filter { it.kind == "Owed to me" }.sumOf { it.amount } - entries.filter { it.kind == "Payment received" }.sumOf { it.amount }
-    val iOwe = entries.filter { it.kind == "I owe" }.sumOf { it.amount } - entries.filter { it.kind == "I paid" }.sumOf { it.amount }
-    val people = entries.map { it.person.trim() }.filter { it.isNotBlank() }.distinct().sorted()
-    fun balanceOwedBy(personName: String) = entries.filter { it.person.equals(personName, ignoreCase = true) && it.kind == "Owed to me" }.sumOf { it.amount } - entries.filter { it.person.equals(personName, ignoreCase = true) && it.kind == "Payment received" }.sumOf { it.amount }
-    fun balanceIOwe(personName: String) = entries.filter { it.person.equals(personName, ignoreCase = true) && it.kind == "I owe" }.sumOf { it.amount } - entries.filter { it.person.equals(personName, ignoreCase = true) && it.kind == "I paid" }.sumOf { it.amount }
+    val income = sumAmount(entries, "Income")
+    val expense = sumAmount(entries, "Expense")
+    val owedToMe = totalOwedToMe(entries)
+    val iOwe = totalIOwe(entries)
+    val people = peopleIn(entries)
 
     fun save(newEntries: List<Entry>) {
         entries = newEntries
@@ -234,18 +226,37 @@ fun LedgerScreen() {
         } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         } else {
+            note = ""; amountText = ""; person = selectedPerson.orEmpty(); kindConfirmed = false
             beginListening()
         }
     }
 
-    Scaffold(topBar = { TopAppBarCompat("My Ledger 1.1") }) { padding ->
+    if (clearRequested) AlertDialog(
+        onDismissRequest = { clearRequested = false },
+        title = { Text("Delete all test records?") },
+        text = { Text("This removes every saved entry on this phone. Export a backup first if you need a copy.") },
+        confirmButton = { TextButton(onClick = { save(emptyList()); clearRequested = false; selectedPerson = null; message = "All records cleared." }) { Text("Delete all") } },
+        dismissButton = { TextButton(onClick = { clearRequested = false }) { Text("Cancel") } }
+    )
+    Scaffold(topBar = { TopAppBarCompat("My Ledger 1.2") }, bottomBar = {
+        Surface(tonalElevation = 4.dp) {
+            Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(16.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Total", fontWeight = FontWeight.Bold)
+                    Text(money(owedToMe - iOwe), fontWeight = FontWeight.Bold)
+                }
+                Text("Owed to you minus what you owe", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("Overview", "Add entry", "Records").forEach { item -> FilterChip(selected = tab == item, onClick = { tab = item }, label = { Text(item) }) }
+                listOf("Overview", "Add entry", "Records").forEach { item -> FilterChip(selected = tab == item, onClick = { selectedPerson = null; tab = item }, label = { Text(item) }) }
             }
             Spacer(Modifier.height(12.dp))
             when (tab) {
                 "Overview" -> {
+                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
                     Text("Your money at a glance", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(12.dp))
                     SummaryCard("Income", income); SummaryCard("Expenses", expense)
@@ -255,9 +266,10 @@ fun LedgerScreen() {
                         Spacer(Modifier.height(8.dp))
                         Text("Balances by person", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         people.forEach { name ->
-                            val theyOwe = balanceOwedBy(name)
-                            val iOweThem = balanceIOwe(name)
-                            Card(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+                            val net = personNet(entries, name)
+                            val theyOwe = net.coerceAtLeast(0.0)
+                            val iOweThem = (-net).coerceAtLeast(0.0)
+                            Card(Modifier.fillMaxWidth().padding(bottom = 8.dp).clickable { selectedPerson = name; person = name; message = ""; tab = "Person" }) {
                                 Column(Modifier.padding(12.dp)) {
                                     Text(name, fontWeight = FontWeight.SemiBold)
                                     if (theyOwe != 0.0) Text("They owe you: " + money(theyOwe))
@@ -269,8 +281,30 @@ fun LedgerScreen() {
                     }
                     Text("Income minus expenses: " + money(income - expense), modifier = Modifier.padding(top = 12.dp), style = MaterialTheme.typography.titleMedium)
                     Text("Records are stored on this device. Export a backup from Records.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
+                    }
+                }
+                "Person" -> {
+                    val name = selectedPerson.orEmpty()
+                    val net = personNet(entries, name)
+                    Text(name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    SummaryCard(if (net >= 0) "They owe you" else "You owe them", kotlin.math.abs(net))
+                    Button(enabled = !isProcessing, onClick = { startVoice() }, modifier = Modifier.fillMaxWidth()) {
+                        Text(if (isListening) "Stop microphone" else if (isProcessing) "Processing…" else "🎙️ Add by voice for $name")
+                    }
+                    if (message.isNotBlank()) Text(message)
+                    TextButton(onClick = { person = name; note = ""; amountText = ""; tab = "Add entry" }) { Text("Type an entry for $name") }
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(entries.filter { it.person.trim().equals(name, ignoreCase = true) }, key = { it.id }) { e ->
+                            Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(12.dp)) {
+                                Text(e.note, fontWeight = FontWeight.SemiBold)
+                                Text("${e.date} • ${e.kind} • ${money(e.amount)}")
+                                TextButton(onClick = { save(entries.filterNot { it.id == e.id }) }) { Text("Delete record") }
+                            } }
+                        }
+                    }
                 }
                 "Add entry" -> {
+                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).imePadding()) {
                     Text("Add a record", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(8.dp))
                     Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
@@ -283,26 +317,29 @@ fun LedgerScreen() {
                     Spacer(Modifier.height(8.dp))
                     Text("Transaction type")
                     Column {
-                        listOf("Owed to me", "Payment received", "I owe", "I paid", "Income", "Expense").chunked(3).forEach { group ->
+                        listOf("Owed to me", "Payment received", "I owe", "I paid", "Income", "Expense").chunked(2).forEach { group ->
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                group.forEach { option -> FilterChip(selected = kind == option, onClick = { kind = option }, label = { Text(option) }) }
+                                group.forEach { option -> FilterChip(selected = kind == option, onClick = { kind = option; kindConfirmed = true }, label = { Text(option) }) }
                             }
                         }
                     }
                     OutlinedTextField(value = date, onValueChange = { date = it }, label = { Text("Date (YYYY-MM-DD)") }, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(value = person, onValueChange = { person = it }, label = { Text("Person") }, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = note, onValueChange = { note = it }, label = { Text("Description / spoken words") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = note, onValueChange = { applySpoken(it) }, label = { Text("Description / spoken words") }, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(value = amountText, onValueChange = { amountText = it }, label = { Text("Amount (NZD)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
                     Spacer(Modifier.height(12.dp))
                     Button(onClick = {
-                        val amount = amountText.toDoubleOrNull()
-                        if (date.isBlank() || amount == null || amount <= 0 || note.isBlank()) message = "Enter a valid date, description and amount."
+                        val amount = amountText.toBigDecimalOrNull()?.setScale(2, java.math.RoundingMode.HALF_UP)?.toDouble()
+                        if (date.isBlank() || amount == null || !amount.isFinite() || amount <= 0 || note.isBlank()) message = "Enter a valid date, description and positive amount."
+                        else if (!kindConfirmed) message = "Choose a transaction type before saving this description."
+                        else if (kind !in listOf("Income", "Expense") && person.isBlank()) message = "Enter the person for this lending or repayment entry."
                         else {
                             save(listOf(Entry(System.currentTimeMillis(), date.trim(), person.trim(), note.trim(), amount, kind)) + entries)
-                            person = ""; note = ""; amountText = ""; message = "Record saved."; tab = "Overview"
+                            person = ""; note = ""; amountText = ""; kindConfirmed = false; message = "Record saved."; tab = if (selectedPerson != null) "Person" else "Overview"
                         }
                     }, modifier = Modifier.fillMaxWidth()) { Text("Save record") }
                     if (message.isNotBlank()) Text(message, modifier = Modifier.padding(top = 8.dp))
+                    }
                 }
                 else -> {
                     Text("Transaction history", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
@@ -313,6 +350,7 @@ fun LedgerScreen() {
                         val intent = Intent(Intent.ACTION_SEND).setType("application/json").putExtra(Intent.EXTRA_SUBJECT, "My Ledger backup").putExtra(Intent.EXTRA_TEXT, data.toString(2))
                         context.startActivity(Intent.createChooser(intent, "Export ledger backup"))
                     }, modifier = Modifier.fillMaxWidth()) { Text("Export backup") }
+                    TextButton(onClick = { clearRequested = true }) { Text("Clear all test records") }
                     Spacer(Modifier.height(8.dp))
                     if (entries.isEmpty()) Text("No records yet. Add your first entry.")
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -338,7 +376,7 @@ fun LedgerScreen() {
 }
 @Composable fun SummaryCard(label: String, value: Double) {
     Card(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
-        Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text(label); Text(money(value), fontWeight = FontWeight.Bold) }
+        Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text(label, modifier = Modifier.weight(1f)); Text(money(value), fontWeight = FontWeight.Bold) }
     }
 }
 fun money(value: Double): String = java.text.NumberFormat.getCurrencyInstance(Locale("en", "NZ")).format(value)
