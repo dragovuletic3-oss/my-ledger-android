@@ -108,12 +108,13 @@ fun LedgerScreen() {
         if (spoken.isBlank()) { note = spoken; kindConfirmed = false; return }
         note = spoken
         val parsed = parseEntry(spoken, selectedPerson)
-        parsed.amount?.let { amountText = it.toString() }
+        amountText = parsed.amount?.let { java.lang.String.format(Locale.ROOT, "%.2f", it) }.orEmpty()
         kindConfirmed = parsed.kind != null
         parsed.kind?.let { kind = it }
-        parsed.person?.let { person = it }
+        person = parsed.person.orEmpty()
         message = if (parsed.kind == null) "Choose the transaction type, then check the person and amount."
-            else "Check the person, type and amount below before saving."
+            else if (parsed.person.isNullOrBlank() || parsed.amount == null) "I missed the person or amount. Tap the microphone and say the full entry again."
+            else "Person: " + parsed.person + ". " + parsed.kind + ": " + money(parsed.amount) + ". Check below, then save."
 
     }
 
@@ -162,7 +163,7 @@ fun LedgerScreen() {
                     }
                 }
                 override fun onResults(results: Bundle?) {
-                    val spoken = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
+                    val spoken = bestVoiceResult(results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty(), selectedPerson)
                     releaseRecognizer()
                     if (spoken.isBlank()) message = "I didn't catch that. Please try again."
                     else { applySpoken(spoken); tab = "Add entry" }
@@ -177,6 +178,7 @@ fun LedgerScreen() {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
             }
             isListening = true
             message = "Listening… tap the microphone again to stop."
@@ -238,12 +240,15 @@ fun LedgerScreen() {
         confirmButton = { TextButton(onClick = { save(emptyList()); clearRequested = false; selectedPerson = null; message = "All records cleared." }) { Text("Delete all") } },
         dismissButton = { TextButton(onClick = { clearRequested = false }) { Text("Cancel") } }
     )
-    Scaffold(topBar = { TopAppBarCompat("My Ledger 1.2") }, bottomBar = {
+    val preview = previewEntries(entries, person, amountText.toDoubleOrNull(), kind, kindConfirmed && tab == "Add entry")
+    val hasPreview = preview.size != entries.size
+    Scaffold(topBar = { TopAppBarCompat("My Ledger 1.3") }, bottomBar = {
         Surface(tonalElevation = 4.dp) {
             Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(16.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Total", fontWeight = FontWeight.Bold)
-                    Text(money(owedToMe - iOwe), fontWeight = FontWeight.Bold)
+                    Text(if (hasPreview) "Total after saving" else "Total", modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.width(8.dp))
+                    Text(money(totalOwedToMe(preview) - totalIOwe(preview)), fontWeight = FontWeight.Bold, softWrap = true)
                 }
                 Text("Owed to you minus what you owe", style = MaterialTheme.typography.bodySmall)
             }
@@ -379,8 +384,8 @@ fun LedgerScreen() {
         Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text(label, modifier = Modifier.weight(1f)); Text(money(value), fontWeight = FontWeight.Bold) }
     }
 }
-fun money(value: Double): String = java.text.NumberFormat.getCurrencyInstance(Locale("en", "NZ")).format(value)
 fun loadEntries(prefs: android.content.SharedPreferences): List<Entry> = try {
     val array = JSONArray(prefs.getString("entries", "[]"))
     (0 until array.length()).map { i -> val o = array.getJSONObject(i); Entry(o.optLong("id"), o.optString("date"), o.optString("person"), o.optString("note"), o.optDouble("amount"), o.optString("kind")) }
 } catch (_: Exception) { emptyList() }
+

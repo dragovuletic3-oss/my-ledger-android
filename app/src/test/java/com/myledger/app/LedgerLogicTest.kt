@@ -68,4 +68,35 @@ class LedgerLogicTest {
         assertEquals(0.0, totalOwedToMe(entries), 0.001)
         assertEquals(20.0, totalIOwe(entries), 0.001)
     }
+
+    @Test fun harryVoiceTranscriptionsCaptureAllThreeFields() {
+        listOf("I owe Harry six hundred dollars", "i o Harry $600", "IO Harry six hundred dollars", "I oh Harry 600 dollars", "i o Harry 6 hundred dollars").forEach {
+            val parsed = parseEntry(it)
+            assertEquals(it, "Harry", parsed.person)
+            assertEquals(it, "I owe", parsed.kind)
+            assertEquals(it, 600.0, requireNotNull(parsed.amount), 0.0)
+        }
+    }
+    @Test fun voiceNamesAndDirectionsRemainSeparate() {
+        assertEquals("Harry Smith", parseEntry("i o Harry Smith $600").person)
+        assertEquals("Owed to me", parseEntry("Harry owes me six hundred dollars").kind)
+        assertEquals("Payment received", parseEntry("Harry just paid me two hundred dollars").kind)
+        assertEquals("I paid", parseEntry("I paid Harry two hundred dollars").kind)
+    }
+    @Test fun voiceAlternativesPreferCompleteEntry() {
+        assertEquals("i o Harry $600", bestVoiceResult(listOf("I Harry $600", "i o Harry $600")))
+        assertEquals("", bestVoiceResult(emptyList()))
+    }
+    @Test fun harryPreviewAndSavedTotalAreSixHundredWithTwoDecimalPlaces() {
+        val draft = previewEntries(emptyList(), "Harry", 600.0, "I owe", true)
+        assertEquals(-600.0, totalOwedToMe(draft) - totalIOwe(draft), 0.0)
+        assertTrue(money(-600.0).contains("600.00"))
+        assertTrue(money(0.0).endsWith("0.00"))
+        assertTrue(money(1234567.0).contains("1,234,567.00"))
+        assertTrue(previewEntries(emptyList(), "", 600.0, "I owe", true).isEmpty())
+        assertTrue(previewEntries(emptyList(), "Harry", 600.0, "I owe", false).isEmpty())
+        val saved = listOf(entry("i o Harry $600"), entry("I paid Harry two hundred dollars"))
+        assertEquals(400.0, totalIOwe(saved), 0.0)
+    }
 }
+

@@ -9,7 +9,8 @@ data class ParsedEntry(val person: String?, val amount: Double?, val kind: Strin
 
 /** Shared by typed descriptions and microphone results. An unknown sentence stays unclassified. */
 fun parseEntry(text: String, defaultPerson: String? = null): ParsedEntry {
-    val clean = text.trim().replace(Regex("[,.!?]+$"), "").replace(Regex("\\s+"), " ")
+    val normalized = text.trim().replace(Regex("^i(?:\\s+(?:o|oh)|o)\\s+", RegexOption.IGNORE_CASE), "I owe ")
+    val clean = normalized.replace(Regex("[,.!?]+$"), "").replace(Regex("\\s+"), " ")
     val name = "([\\p{L}][\\p{L}'’\\-]*(?: [\\p{L}][\\p{L}'’\\-]*)*?)"
     val amountStart = "(?=\\s+(?:\\$|[0-9]|zero\\b|one\\b|two\\b|three\\b|four\\b|five\\b|six\\b|seven\\b|eight\\b|nine\\b|ten\\b|eleven\\b|twelve\\b|thirteen\\b|fourteen\\b|fifteen\\b|sixteen\\b|seventeen\\b|eighteen\\b|nineteen\\b|twenty\\b|thirty\\b|forty\\b|fifty\\b|sixty\\b|seventy\\b|eighty\\b|ninety\\b)|$)"
     val rules = listOf(
@@ -38,7 +39,9 @@ fun parseEntry(text: String, defaultPerson: String? = null): ParsedEntry {
     }
     if (who?.lowercase(Locale.ROOT) in listOf("him", "her", "them", "he", "she", "they")) who = defaultPerson
     val numeric = Regex("(?:\\$\\s*)?(\\d+(?:,\\d{3})*(?:\\.\\d{1,2})?)(?!\\d)").find(clean)
-    val amount = numeric?.groupValues?.get(1)?.replace(",", "")?.toDoubleOrNull() ?: wordAmount(clean)
+    val digitAmount = numeric?.groupValues?.get(1)?.replace(",", "")?.toDoubleOrNull()
+    val scale = numeric?.let { Regex("^\\s+(hundred|thousand)\\b", RegexOption.IGNORE_CASE).find(clean.substring(it.range.last + 1)) }?.groupValues?.get(1)
+    val amount = if (digitAmount != null && scale != null) digitAmount * (if (scale.equals("hundred", true)) 100 else 1000) else digitAmount ?: wordAmount(clean)
     return ParsedEntry(who?.trim() ?: defaultPerson?.takeIf { it.isNotBlank() }, amount, kind)
 }
 
@@ -65,3 +68,21 @@ fun personNet(entries: List<Entry>, person: String): Double = entries.filter { i
 fun peopleIn(entries: List<Entry>): List<String> = entries.map { it.person.trim() }.filter { it.isNotBlank() }.distinctBy { it.lowercase(Locale.ROOT) }.sortedBy { it.lowercase(Locale.ROOT) }
 fun totalOwedToMe(entries: List<Entry>): Double = peopleIn(entries).sumOf { cents(personNet(entries, it).coerceAtLeast(0.0)) } / 100.0
 fun totalIOwe(entries: List<Entry>): Double = peopleIn(entries).sumOf { cents((-personNet(entries, it)).coerceAtLeast(0.0)) } / 100.0
+
+
+/** Prefer a complete interpretation while preserving recognizer order on ties. */
+fun bestVoiceResult(results: List<String>, defaultPerson: String? = null): String =
+    results.filter { it.isNotBlank() }.maxByOrNull { text ->
+        val parsed = parseEntry(text, defaultPerson)
+        (if (parsed.kind != null) 4 else 0) + (if (!parsed.person.isNullOrBlank()) 2 else 0) + (if (parsed.amount != null) 1 else 0)
+    }.orEmpty()
+
+fun previewEntries(entries: List<Entry>, person: String, amount: Double?, kind: String, confirmed: Boolean): List<Entry> =
+    if (confirmed && person.isNotBlank() && amount != null && amount.isFinite() && amount > 0 && kind in listOf("Owed to me", "I owe", "Payment received", "I paid"))
+        entries + Entry(-1, "", person.trim(), "", amount, kind)
+    else entries
+
+fun money(value: Double): String = java.text.NumberFormat.getCurrencyInstance(Locale("en", "NZ")).apply {
+    minimumFractionDigits = 2
+    maximumFractionDigits = 2
+}.format(value)
